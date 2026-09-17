@@ -1,6 +1,7 @@
 # joincontactscans
 
 [![CI](https://github.com/paulglover/join-contact-scans/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/paulglover/join-contact-scans/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/paulglover/join-contact-scans?label=release)](https://github.com/paulglover/join-contact-scans/releases)
 
 Join the sections of a scanned contact sheet into one linear DNG.
 
