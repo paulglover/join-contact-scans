@@ -103,6 +103,19 @@ That last pair matters more than it looks. A run of sections 2, 3, 4 is
 perfectly consecutive, so only the "starts at section 2" check catches it — and
 what it catches is a valid-looking sheet quietly missing its top.
 
+## What trichrome has to do with it
+
+`trichrome` comes up throughout what follows, so: it is a separate tool for a
+separate job — merging three single-colour exposures of one frame into a linear
+DNG. This one stacks several sections of one sheet. What they share is the
+output and the way it is reached: the same file layout, the same
+linear-declaration tags, and the same kind of macOS droplet for opening a
+selection from the Finder. Sheets joined here and frames merged there land in a
+converter looking like siblings, which is the point — the grading you work out
+for one applies to the other.
+
+Colour is where they part company, and the next section says why.
+
 ## What the output file is
 
 A linear DNG: `PhotometricInterpretation = 34892` (LinearRaw), three 16-bit
