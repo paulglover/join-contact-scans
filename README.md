@@ -27,6 +27,8 @@ wrote /Volumes/Files/Vuescan/S0220.dng  (9442x12800, uint16)
 ## Install
 
 ```bash
+git clone https://github.com/paulglover/join-contact-scans.git
+cd join-contact-scans
 pip install -e .
 ```
 
