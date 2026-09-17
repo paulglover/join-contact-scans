@@ -105,9 +105,10 @@ what it catches is a valid-looking sheet quietly missing its top.
 
 ## What trichrome has to do with it
 
-`trichrome` comes up throughout what follows, so: it is a separate tool for a
-separate job — merging three single-colour exposures of one frame into a linear
-DNG. This one stacks several sections of one sheet. What they share is the
+[`trichrome`](https://github.com/paulglover/trichrome) comes up throughout what
+follows, so: it is the companion tool, doing a separate job — merging
+red/green/blue-light RAW triplets into a linear DNG. This one stacks several
+sections of one sheet. What they share is the
 output and the way it is reached: the same file layout, the same
 linear-declaration tags, and the same kind of macOS droplet for opening a
 selection from the Finder. Sheets joined here and frames merged there land in a
