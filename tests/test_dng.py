@@ -155,8 +155,15 @@ def test_keeps_the_scanner_dpi(tmp_path):
 def test_stamps_a_recognisable_marker(tmp_path):
     out, _ = _join(tmp_path, count=2)
     assert dng.carries_join_marker(str(out))
-    assert "Joined from S0220-1.dng" in fix.ifd0_tags(out)[270]
     assert fix.ifd0_tags(out)[50827] == "S0220-1.dng"
+
+
+def test_writes_nothing_into_image_description(tmp_path):
+    """ImageDescription belongs to whoever owns the image. The source leaves it
+    empty, so the join leaves it empty — what the sheet was made from is
+    recorded in Software and OriginalRawFileName instead."""
+    out, _ = _join(tmp_path, count=2)
+    assert 270 not in fix.ifd0_tags(out)
 
 
 # --- The thumbnail ---------------------------------------------------------- #

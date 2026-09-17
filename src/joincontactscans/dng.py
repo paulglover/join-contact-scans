@@ -105,7 +105,6 @@ OUTPUT_EXTENSION = ".dng"
 JOIN_MARKER = "JoinContactScans:vertical-join-linear-v1"
 
 # DNG tag numbers used below, named so the extratags lists stay readable.
-_TAG_IMAGE_DESCRIPTION = 270
 _TAG_DNG_VERSION = 50706
 _TAG_DNG_BACKWARD_VERSION = 50707
 _TAG_UNIQUE_CAMERA_MODEL = 50708
@@ -309,10 +308,12 @@ def _added_tags(profile: SourceProfile, sources: Sequence[str]
     if _TAG_ORIGINAL_RAW_FILE_NAME not in have and sources:
         ifd0.append((_TAG_ORIGINAL_RAW_FILE_NAME, "s", 0,
                      os.path.basename(sources[0]), True))
-    if _TAG_IMAGE_DESCRIPTION not in have and sources:
-        ifd0.append((_TAG_IMAGE_DESCRIPTION, "s", 0,
-                     "Joined from " + ", ".join(os.path.basename(s)
-                                                for s in sources), True))
+    # ImageDescription is left alone. Whatever the source put there is carried
+    # through like any other IFD0 tag, and where the source left it empty it
+    # stays empty: it is a field for whoever owns the image to write in, and a
+    # sheet arriving with a sentence this tool made up would displace that.
+    # What the file was joined from is already recorded, in Software (the join
+    # marker) and OriginalRawFileName.
 
     raw: List[tuple] = []
     if _TAG_BLACK_LEVEL_REPEAT_DIM not in have:
