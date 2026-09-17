@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Ends of the range declared in pyproject.toml (requires-python >=3.9)
+        # plus one in the middle.
+        python-version: ["3.9", "3.11", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - run: pip install -e ".[dev]"
+
+      - run: pytest -q
+
+  # The single required status check on main. Branch protection matches checks
+  # by name, so requiring the matrix jobs directly ("test (3.9)" …) would wedge
+  # every PR the moment the matrix changed: the old names stop reporting, and a
+  # required check that never arrives blocks forever. Requiring only this job
+  # keeps the matrix free to change.
+  #
+  # if: always() is load-bearing. Without it this job is skipped when the matrix
+  # fails, a skipped required check never reports, and PRs hang instead of
+  # showing a red X.
+  ci-ok:
+    if: always()
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless every matrix job succeeded
+        run: |
+          echo "test result: ${{ needs.test.result }}"
+          test "${{ needs.test.result }}" = "success"
