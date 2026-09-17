@@ -1,5 +1,7 @@
 # joincontactscans
 
+[![CI](https://github.com/paulglover/join-contact-scans/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/paulglover/join-contact-scans/actions/workflows/ci.yml)
+
 Join the sections of a scanned contact sheet into one linear DNG.
 
 A contact sheet bigger than the scanner's bed comes off it in sections —
