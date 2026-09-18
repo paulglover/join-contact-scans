@@ -1,5 +1,4 @@
-"""Reading, naming, ordering and validating the sections."""
-import dataclasses
+"""The roll id, and reading, ordering and validating the sections."""
 import os
 import time
 
@@ -10,45 +9,83 @@ import dngfixture as fix
 from joincontactscans import scan
 
 
-# --- Filenames ------------------------------------------------------------- #
-@pytest.mark.parametrize("name, roll, seq", [
-    ("S0220-1.dng", "S0220", 1),
-    ("S0220-10.dng", "S0220", 10),
-    ("S0220-007.dng", "S0220", 7),
-    # A roll id may contain hyphens of its own: the split is on the LAST one.
-    ("2026-05-portra-3.dng", "2026-05-portra", 3),
+def _sections(paths):
+    return [scan.read_section(p)
+            for p in scan.collect_section_files([str(p) for p in paths])]
+
+
+def _numbered(directory, numbers, width=3):
+    """Sections named S0220-N.dng for each N, all `width` pixels wide."""
+    paths = []
+    for i in numbers:
+        path = directory / f"S0220-{i}.dng"
+        fix.write_section(path, fix.section_pixels(3, width, seed=i))
+        paths.append(path)
+    return paths
+
+
+# --- The roll id ----------------------------------------------------------- #
+@pytest.mark.parametrize("given, roll", [
+    ("S0220", "S0220"),
+    ("  S0220 ", "S0220"),              # whitespace around it is a slip
+    ("2026-05 portra", "2026-05 portra"),
+    ("S0220.v2", "S0220.v2"),
 ])
-def test_parse_section_name(name, roll, seq):
-    assert scan.parse_section_name("/scans/" + name) == (roll, seq)
+def test_roll_id_accepted(given, roll):
+    assert scan.validate_roll_id(given) == roll
 
 
-@pytest.mark.parametrize("name", [
-    "S0220.dng",        # what this tool WRITES: no sequence, not an input
-    "S0220-.dng",
-    "S0220-a.dng",
-    "S0220-1a.dng",
-    "nohyphen.dng",
+@pytest.mark.parametrize("given, match", [
+    ("", "blank"),
+    ("   ", "blank"),
+    (None, "blank"),
+    ("scans/S0220", "not a path"),
+    (".", "not a usable"),
+    ("..", "not a usable"),
 ])
-def test_parse_section_name_rejects(name):
-    with pytest.raises(scan.SectionError):
-        scan.parse_section_name("/scans/" + name)
+def test_roll_id_rejected(given, match):
+    with pytest.raises(scan.SectionError, match=match):
+        scan.validate_roll_id(given)
 
 
-def test_joined_output_is_not_a_section():
-    """The reason a finished join can sit beside its sources: its name has no
-    scan number, so a second run does not pick it up as an input."""
-    assert scan.is_section_path("/scans/S0220-1.dng")
-    assert not scan.is_section_path("/scans/S0220.dng")
-    assert not scan.is_section_path("/scans/S0220-1.tif")
+# --- Naming the sections --------------------------------------------------- #
+@pytest.mark.parametrize("name, seq", [
+    ("S0220-1.dng", 1),
+    ("S0220-10.dng", 10),
+    ("2026-05-portra-3.dng", 3),
+    ("S0220.dng", None),
+    ("S0220-a.dng", None),
+    ("scan.dng", None),
+])
+def test_scan_number(name, seq):
+    assert scan.scan_number("/scans/" + name) == seq
 
 
-def test_collect_skips_non_sections_in_a_folder(tmp_path):
-    fix.write_roll(tmp_path, count=2)
-    (tmp_path / "S0220.dng").write_bytes(b"not a dng")
+def test_collect_accepts_any_dng_name(tmp_path):
+    for name in ("top.dng", "bottom.DNG"):
+        fix.write_section(tmp_path / name, fix.section_pixels(3, 3, 1))
+    found = scan.collect_section_files(
+        [str(tmp_path / "top.dng"), str(tmp_path / "bottom.DNG")])
+    assert [os.path.basename(p) for p in found] == ["bottom.DNG", "top.dng"]
+
+
+def test_collect_refuses_a_folder(tmp_path):
+    with pytest.raises(scan.SectionError, match="is a folder"):
+        scan.collect_section_files([str(tmp_path)])
+
+
+def test_collect_refuses_a_file_that_is_not_a_dng(tmp_path):
+    (tmp_path / "S0220-1.tif").write_bytes(b"")
+    with pytest.raises(scan.SectionError, match="not a .dng file"):
+        scan.collect_section_files([str(tmp_path / "S0220-1.tif")])
+
+
+def test_collect_names_every_bad_input_at_once(tmp_path):
     (tmp_path / "notes.txt").write_text("hi")
-    found = [p.rsplit("/", 1)[-1]
-             for p in scan.collect_section_files([str(tmp_path)])]
-    assert found == ["S0220-1.dng", "S0220-2.dng"]
+    with pytest.raises(scan.SectionError) as e:
+        scan.collect_section_files([str(tmp_path), str(tmp_path / "notes.txt"),
+                                    str(tmp_path / "nope.dng")])
+    assert len(str(e.value).splitlines()) == 3
 
 
 def test_collect_deduplicates(tmp_path):
@@ -67,7 +104,7 @@ def test_read_section(tmp_path):
     fix.write_section(tmp_path / "S0220-2.dng",
                       fix.section_pixels(9, 13, seed=1))
     s = scan.read_section(str(tmp_path / "S0220-2.dng"))
-    assert (s.roll, s.seq, s.width, s.height) == ("S0220", 2, 13, 9)
+    assert (s.seq, s.width, s.height) == (2, 13, 9)
 
 
 def test_read_section_rejects_mosaiced(tmp_path):
@@ -98,60 +135,42 @@ def test_open_plane_gives_the_pixels(tmp_path):
 def test_sections_stack_in_numeric_not_string_order(tmp_path):
     """Sorted as text, S0220-10 would land between 1 and 2 and silently
     interleave the sheet."""
-    for i in (1, 2, 10, 11):
-        fix.write_section(tmp_path / f"S0220-{i}.dng",
-                          fix.section_pixels(3, 3, seed=i))
-    sections = [scan.read_section(p)
-                for p in scan.collect_section_files([str(tmp_path)])]
-    rolls = scan.group_into_rolls(sections)
-    assert [s.seq for s in rolls["S0220"]] == [1, 2, 10, 11]
+    paths = _numbered(tmp_path, (11, 2, 10, 1))
+    assert [s.seq for s in _sections(paths)] == [1, 2, 10, 11]
 
 
-def test_group_separates_rolls(tmp_path):
-    fix.write_roll(tmp_path, roll="S0220", count=2)
-    fix.write_roll(tmp_path, roll="S0221", count=3)
-    sections = [scan.read_section(p)
-                for p in scan.collect_section_files([str(tmp_path)])]
-    rolls = scan.group_into_rolls(sections)
-    assert {r: len(v) for r, v in rolls.items()} == {"S0220": 2, "S0221": 3}
+def test_selection_order_does_not_matter(tmp_path):
+    paths = _numbered(tmp_path, (1, 2, 3))
+    assert (_sections(paths) == _sections(reversed(paths))
+            == _sections([paths[1], paths[2], paths[0]]))
 
 
 def test_validate_rejects_a_lone_section(tmp_path):
     paths, _ = fix.write_roll(tmp_path, count=1)
-    sections = [scan.read_section(str(p)) for p in paths]
     with pytest.raises(scan.SectionError, match="at least two"):
-        scan.validate_roll(sections)
+        scan.validate_sections(_sections(paths))
 
 
 def test_validate_rejects_mismatched_width(tmp_path):
     fix.write_section(tmp_path / "S0220-1.dng", fix.section_pixels(4, 11, 1))
     fix.write_section(tmp_path / "S0220-2.dng", fix.section_pixels(4, 12, 2))
-    sections = [scan.read_section(str(tmp_path / f"S0220-{i}.dng"))
-                for i in (1, 2)]
     with pytest.raises(scan.SectionError, match="pixels wide"):
-        scan.validate_roll(sections)
-
-
-def test_validate_rejects_duplicate_sequence(tmp_path):
-    """Two files claiming the same place in the stack leave the order
-    ambiguous, and quietly picking one would be a guess about the sheet."""
-    paths, _ = fix.write_roll(tmp_path, count=2)
-    first = scan.read_section(str(paths[0]))
-    twin = dataclasses.replace(first, path=str(paths[1]))
-    with pytest.raises(scan.SectionError, match="two section 1s"):
-        scan.validate_roll([first, twin])
+        scan.validate_sections(_sections(
+            [tmp_path / "S0220-1.dng", tmp_path / "S0220-2.dng"]))
 
 
 def test_validate_warns_but_allows_a_gap(tmp_path):
     """A missing scan number is a missing scan, not a reason to refuse the
     ones that are there."""
-    for i in (1, 2, 4):
-        fix.write_section(tmp_path / f"S0220-{i}.dng",
-                          fix.section_pixels(3, 3, seed=i))
-    sections = [scan.read_section(p)
-                for p in scan.collect_section_files([str(tmp_path)])]
-    warnings = scan.validate_roll(sections)
+    warnings = scan.validate_sections(_sections(_numbered(tmp_path, (1, 2, 4))))
     assert any("not consecutive" in w for w in warnings)
+
+
+def test_validate_says_nothing_of_numbers_names_do_not_have(tmp_path):
+    for name in ("top.dng", "middle.dng", "bottom.dng"):
+        fix.write_section(tmp_path / name, fix.section_pixels(3, 3, 1))
+    sections = _sections(tmp_path.glob("*.dng"))
+    assert scan.validate_sections(sections) == []
 
 
 def test_validate_warns_on_divergent_colour(tmp_path):
@@ -159,9 +178,8 @@ def test_validate_warns_on_divergent_colour(tmp_path):
     fix.write_section(tmp_path / "S0220-2.dng", fix.section_pixels(3, 3, 2),
                       ifd0=[t for t in fix.VUESCAN_IFD0 if t[0] != 50708]
                       + [(50708, "s", 0, "Some Other Scanner", True)])
-    sections = [scan.read_section(str(tmp_path / f"S0220-{i}.dng"))
-                for i in (1, 2)]
-    warnings = scan.validate_roll(sections)
+    warnings = scan.validate_sections(_sections(
+        [tmp_path / "S0220-1.dng", tmp_path / "S0220-2.dng"]))
     assert any("different colour metadata" in w for w in warnings)
 
 
@@ -258,19 +276,9 @@ def test_validate_warns_when_section_one_is_absent(tmp_path):
     consecutive run, and joining it yields a valid-looking sheet quietly
     missing its top. This is what a droplet handed a split selection produced
     before it learned to gather the deliveries."""
-    for i in (2, 3, 4):
-        fix.write_section(tmp_path / f"S0220-{i}.dng",
-                          fix.section_pixels(3, 3, seed=i))
-    sections = [scan.read_section(p)
-                for p in scan.collect_section_files([str(tmp_path)])]
-    warnings = scan.validate_roll(sections)
+    warnings = scan.validate_sections(_sections(_numbered(tmp_path, (2, 3, 4))))
     assert any("missing its top" in w for w in warnings)
 
 
-def test_validate_is_quiet_about_a_complete_roll(tmp_path):
-    for i in (1, 2, 3):
-        fix.write_section(tmp_path / f"S0220-{i}.dng",
-                          fix.section_pixels(3, 3, seed=i))
-    sections = [scan.read_section(p)
-                for p in scan.collect_section_files([str(tmp_path)])]
-    assert scan.validate_roll(sections) == []
+def test_validate_is_quiet_about_a_complete_sheet(tmp_path):
+    assert scan.validate_sections(_sections(_numbered(tmp_path, (1, 2, 3)))) == []

@@ -6,8 +6,9 @@
 Join the sections of a scanned contact sheet into one linear DNG.
 
 A contact sheet bigger than the scanner's bed comes off it in sections —
-`S0220-1.dng`, `S0220-2.dng`, `S0220-3.dng`, `S0220-4.dng`. This stacks them top
-to bottom in scan order and writes one `S0220.dng`.
+`S0220-1.dng`, `S0220-2.dng`, `S0220-3.dng`, `S0220-4.dng`. Give this those
+files and the sheet's roll id, and it stacks them top to bottom and writes one
+`S0220.dng`.
 
 The pixels are the pixels. Nothing is scaled, blended, aligned, feathered or
 colour-matched at the seams: the row below the last row of section one is the
@@ -15,16 +16,13 @@ first row of section two, unchanged. The tool reads the finished file back and
 checks that, section by section, before it reports success.
 
 ```
-$ joincontactscans /Volumes/Files/Vuescan/S0220-*.dng
-1 roll(s) · linear DNG · verifying pixels
-  S0220: 4 sections, 9442x12800  ->  S0220.dng
-    S0220-1.dng + S0220-2.dng + S0220-3.dng + S0220-4.dng
-[1/1] S0220 …
+$ joincontactscans --roll-id S0220 /Volumes/Files/Vuescan/S0220-*.dng
+S0220: 4 sections, 9442x12800 · linear DNG · verifying pixels
+  S0220-1.dng + S0220-2.dng + S0220-3.dng + S0220-4.dng
+  -> /Volumes/Files/Vuescan/S0220.dng
 
 wrote /Volumes/Files/Vuescan/S0220.dng  (9442x12800, uint16)
       verified 4/4 sections pixel-identical
-
-1 joined, 0 failed, 0 skipped
 ```
 
 ## Install
@@ -41,40 +39,49 @@ exiftool.
 ## Use
 
 ```bash
-joincontactscans S0220-1.dng S0220-2.dng S0220-3.dng   # -> S0220.dng, beside them
-joincontactscans /Volumes/Files/Vuescan                # every roll in the folder
-joincontactscans ./scans --out ./joined
-joincontactscans ./scans --dry-run                     # show the plan only
-joincontactscans ./scans --force                       # replace an existing sheet
-joincontactscans ./scans --no-verify                   # skip the readback
+joincontactscans -i S0220 S0220-1.dng S0220-2.dng S0220-3.dng   # -> S0220.dng, beside them
+joincontactscans -i S0220 scans/S0220-*.dng --out ./joined
+joincontactscans -i S0220 scans/S0220-*.dng --dry-run           # show the plan only
+joincontactscans -i S0220 scans/S0220-*.dng --force             # replace an existing sheet
+joincontactscans -i S0220 scans/S0220-*.dng --no-verify         # skip the readback
 ```
 
 | | |
 |---|---|
-| `-o`, `--out DIR` | write the joined sheets here (default: beside each roll's first section) |
-| `-r`, `--recursive` | descend into subfolders of any input folder |
-| `-f`, `--force` | replace an existing joined file instead of skipping the roll |
+| `-i`, `--roll-id ROLLID` | **required.** The sheet's roll id: the joined file is `ROLLID.dng`, and the id is written into its XMP `dc:identifier` |
+| `-o`, `--out DIR` | write the joined sheet here (default: beside its first section) |
+| `-f`, `--force` | replace an existing joined file instead of skipping the sheet |
 | `-n`, `--dry-run` | show the plan; read and write nothing |
 | `--no-verify` | skip reading the finished file back to confirm every section is pixel-identical |
 
-### Naming
+### Inputs
 
-Sections are `ROLLID-SCANSEQ.dng`; the joined sheet is `ROLLID.dng`. The split
-is on the **last** hyphen, so a roll id may contain hyphens of its own —
-`2026-05-portra-3.dng` is section 3 of roll `2026-05-portra`.
+Every file named is a section of **one** sheet. At least two, no upper limit.
+Each must be a `.dng` file; folders are refused, as is anything else, and all of
+the refusals are listed together rather than one per attempt.
 
-The scan sequence is a **number** and is sorted as one. Sorted as text,
-`S0220-10` would land between `S0220-1` and `S0220-2` and silently interleave a
-ten-section sheet. So selection order does not matter: whatever order Finder or
-a shell glob hands the files over in, the sheet comes out the same.
+Nothing about a file's name decides which sheet it belongs to — that is what
+the roll id is for — but the names do decide the **order**. Sections are
+stacked in filename order with the numbers compared as numbers: sorted as
+text, `S0220-10` would land between `S0220-1` and `S0220-2` and silently
+interleave a ten-section sheet. So selection order does not matter: whatever
+order Finder or a shell glob hands the files over in, the sheet comes out the
+same.
 
-The joined file's name has no scan number, which is what lets it sit beside its
-sources — running the tool over the same folder again picks up the sections and
-leaves the finished sheet alone.
+When every name ends in a scan number (`…-N.dng`), a gap in the numbers, or a
+sheet that does not start at 1, is warned about.
+
+### The roll id
+
+The roll id names the output — `ROLLID.dng` — and is written into the file's
+XMP as `dc:identifier`. Whitespace around it is trimmed; a blank one is refused,
+as is one containing `/` (it is a file name, not a path — use `--out` for the
+folder). A roll id that would put the sheet on top of one of its own sections is
+refused too.
 
 ### Nothing is deleted, nothing is overwritten
 
-Source files are never touched. A roll whose joined file already exists is
+Source files are never touched. A sheet whose joined file already exists is
 reported and skipped, not replaced; `--force` replaces it.
 
 Every write goes to a temporary file beside the destination and is renamed over
@@ -82,29 +89,17 @@ it only once it has been verified. That is what makes `--force` safe: a failed
 or interrupted join leaves the previous file exactly as it was, rather than a
 truncated replacement.
 
-### One bad roll does not stop the others
+### What stops a join, and what is only a warning
 
-A selection of six rolls where one has a section missing produces five joined
-sheets and one clear complaint:
+Things that stop it: fewer than two sections, sections that disagree on width,
+a file that is not a linear DNG, a folder or non-DNG file among the inputs, a
+blank roll id. Things that are only warnings: a gap in the scan numbers, a
+sheet that starts at something other than section 1, sections whose colour
+metadata disagrees.
 
-```
-$ joincontactscans ./scans
-...
-wrote /scans/S0220.dng  (9442x12800, uint16)
-      verified 4/4 sections pixel-identical
-
-1 joined, 0 failed, 0 skipped
-PROBLEM roll 'S0221' has only 1 section (S0221-1.dng) — a join needs at least two
-```
-
-Things that stop a roll: fewer than two sections, sections that disagree on
-width, two files claiming the same scan number, a file that is not a linear DNG.
-Things that are only warnings: a gap in the scan numbers, a roll that starts at
-something other than section 1, sections whose colour metadata disagrees.
-
-That last pair matters more than it looks. A run of sections 2, 3, 4 is
-perfectly consecutive, so only the "starts at section 2" check catches it — and
-what it catches is a valid-looking sheet quietly missing its top.
+The "starts at section 2" check matters more than it looks. A run of sections
+2, 3, 4 is perfectly consecutive, so only this check catches it — and what it
+catches is a valid-looking sheet quietly missing its top.
 
 ## What trichrome has to do with it
 
@@ -148,9 +143,8 @@ lifted out of the EXIF sub-IFD into IFD0, where a converter looks for it, so the
 sheet sorts by when it was scanned. A first section that records no date at all
 falls back to its file modification time.
 
-The joined file's own name, without the extension (`S0220`), is written into
-its XMP as `dc:identifier`, so the sheet can still be identified after a
-catalogue renames it.
+The roll id (`S0220`) is written into the file's XMP as `dc:identifier`, so the
+sheet can still be identified after a catalogue renames it.
 
 This is where the tool differs from trichrome. Trichrome *must* fabricate a
 colour spec, because a three-light merge is not colorimetric and no honest
@@ -225,8 +219,13 @@ Finder will offer under **Open With**, the same way Trichrome Merge works:
 contrib/macos/build-app.sh          # -> ~/Applications/Join Contact Sheet Scans.app
 ```
 
-Select a sheet's sections and open them with it, or drop a whole scan folder on
-it to join every roll inside.
+Select one sheet's sections and open them with it. It asks for the roll id —
+blank is not accepted — and, optionally, a different output folder:
+
+- **Roll ID** — asked fresh every time.
+- **Different output folder**, and the folder — remembered between runs. A new
+  install starts unticked, with no folder, which writes the sheet beside its
+  first section.
 
 The app waits about a second before it starts. That is deliberate:
 LaunchServices does not deliver a multiple-file selection as one event — a

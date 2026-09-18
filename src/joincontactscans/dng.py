@@ -276,9 +276,9 @@ def carries_join_marker(path) -> bool:
 
 
 def xmp_packet(identifier: str) -> bytes:
-    """A minimal XMP packet stating `identifier` as dc:identifier — the name
-    the joined sheet was written under, so a catalogue that has renamed the
-    file can still say what it was called."""
+    """A minimal XMP packet stating `identifier` as dc:identifier — the roll
+    id the sheet was joined under, so a catalogue that has renamed the file can
+    still say which sheet it is."""
     return (
         '<?xpacket begin="\ufeff" id="W5M0MpCehiHzreSzNTczkc9d"?>\n'
         '<x:xmpmeta xmlns:x="adobe:ns:meta/">\n'
@@ -294,7 +294,7 @@ def xmp_packet(identifier: str) -> bytes:
 
 
 def _added_tags(profile: SourceProfile, sources: Sequence[str],
-                name: Optional[str] = None
+                identifier: Optional[str] = None
                 ) -> Tuple[List[tuple], List[tuple]]:
     """The `(ifd0, raw)` extratags this module contributes: the version stamp,
     the provenance, and a linear-declaration default for each tag the source
@@ -336,11 +336,11 @@ def _added_tags(profile: SourceProfile, sources: Sequence[str],
     # What the file was joined from is already recorded, in Software (the join
     # marker) and OriginalRawFileName.
     #
-    # XMP carries the name the sheet was written under, without its
-    # extension, as dc:identifier. The sources' own XMP is not carried (it is
-    # not in scan._CARRY_IFD0), so this packet is the whole of the file's XMP.
-    if name:
-        packet = xmp_packet(os.path.splitext(name)[0])
+    # XMP carries the roll id as dc:identifier. The sources' own XMP is not
+    # carried (it is not in scan._CARRY_IFD0), so this packet is the whole of
+    # the file's XMP.
+    if identifier:
+        packet = xmp_packet(identifier)
         ifd0.append((_TAG_XMP, "B", len(packet), packet, True))
 
     raw: List[tuple] = []
@@ -356,16 +356,15 @@ def _added_tags(profile: SourceProfile, sources: Sequence[str],
 def write_joined_dng(path: str, planes: Sequence, profile: SourceProfile,
                      sources: Sequence[str] = (),
                      version: Optional[str] = None,
-                     name: Optional[str] = None) -> None:
+                     identifier: Optional[str] = None) -> None:
     """Write `planes` — (H, W, 3) uint16 array-likes, in stacking order — to
     `path` as one uncompressed linear DNG. Raises JoinError on failure.
 
     The pixels written are exactly the pixels read, in order, unchanged.
     `profile` is the first section's metadata (scan.read_profile) and `sources`
-    the section paths, used for provenance. `name` is the file name the sheet
-    will finally have, stated as XMP dc:identifier; it defaults to the
-    basename of `path`, and is given separately for a caller that writes to a
-    temporary file and renames it."""
+    the section paths, used for provenance. `identifier` is the roll id,
+    stated as XMP dc:identifier; it defaults to the name of `path` without its
+    extension."""
     if not planes:
         raise JoinError("nothing to write: no sections")
     widths = {int(p.shape[1]) for p in planes}
@@ -390,7 +389,8 @@ def write_joined_dng(path: str, planes: Sequence, profile: SourceProfile,
 
     rows_per_strip = max(1, min(height, _STRIP_TARGET_BYTES // max(1, row_bytes)))
     ifd0_added, raw_added = _added_tags(
-        profile, sources, name or os.path.basename(path))
+        profile, sources,
+        identifier or os.path.splitext(os.path.basename(path))[0])
     ifd0_tags = list(profile.ifd0) + ifd0_added
     raw_tags = list(profile.raw) + raw_added
     step = thumbnail_step(width, height)
