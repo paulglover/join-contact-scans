@@ -20,7 +20,7 @@ Public API:
 
     result = run_job(plan_job(["S0220-1.dng", "S0220-2.dng"], "S0220"))
 """
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from .dng import (JOIN_MARKER, OUTPUT_EXTENSION, carries_join_marker,
                   read_joined_dng, verify_pixels, verify_structure,
