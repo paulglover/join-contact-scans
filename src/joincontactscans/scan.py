@@ -2,22 +2,27 @@
 Reading the sections of a contact-sheet scan.
 
 A *section* is one pass of the scanner over part of a contact sheet, written by
-VueScan (or anything else that produces linear DNG) as `ROLLID-SCANSEQ.dng`.
-This module turns a pile of such files into ordered, validated groups, hands out
-their pixels without pulling a gigabyte into memory to do it, and harvests the
-metadata the joined file will carry.
+VueScan (or anything else that produces linear DNG) as a `.dng` file. This
+module takes the files the user named as one sheet's sections, puts them in
+order, checks they can be stacked, hands out their pixels without pulling a
+gigabyte into memory to do it, and harvests the metadata the joined file will
+carry.
+
+Every file named is a section of the same sheet. Nothing is inferred from the
+names about which sheet a file belongs to: the roll id is given separately, by
+whoever is doing the joining.
 
 Filename order, and why it is not string order
 ----------------------------------------------
-The scan sequence decides the stacking order, and it is a NUMBER. Sorted as
-text, `S0220-10` lands between `S0220-1` and `S0220-2`, which would silently
-interleave a ten-section sheet. So the trailing field is parsed as an integer
-and sorted as one; a roll whose sections are not consecutively numbered is
-still joined, in numeric order, because a gap is a missing scan and not a
-reason to refuse the ones that are there.
+The files are stacked in the order of their names, and the numbers in a name
+are compared as NUMBERS. Sorted as text, `S0220-10` lands between `S0220-1` and
+`S0220-2`, which would silently interleave a ten-section sheet. So each name is
+split into runs of digits and non-digits, and the digit runs are compared by
+value. Selection order plays no part — Finder does not deliver it reliably.
 
-The split is on the LAST hyphen, so a roll id may contain hyphens of its own:
-`2026-05-portra-3.dng` is section 3 of roll `2026-05-portra`.
+Where every name ends in `-N`, those numbers are also checked for gaps and for
+a sheet that does not start at section 1. A gap is a missing scan and not a
+reason to refuse the ones that are there, so both are warnings.
 
 What counts as joinable
 -----------------------
@@ -30,7 +35,7 @@ except height. This module requires, and says plainly when it does not get:
   even, and a file that silently got that wrong looks like a colour problem
   three steps later,
 * 16-bit unsigned samples,
-* the same pixel width as every other section of the roll.
+* the same pixel width as every other section of the sheet.
 
 Reading the pixels
 ------------------
@@ -84,9 +89,9 @@ SECTION_EXTENSION = ".dng"
 # makes a DNG "linear".
 PHOTOMETRIC_LINEAR_RAW = 34892
 
-# `ROLLID-SCANSEQ`, split on the last hyphen. The roll id may contain hyphens;
-# the sequence may not, and must be digits.
-_SECTION_NAME = re.compile(r"^(?P<roll>.+)-(?P<seq>\d+)$")
+# A trailing `-N` scan number, used only to warn about gaps. The order comes
+# from `_natural_key`, which does not need it.
+_SCAN_NUMBER = re.compile(r"-(?P<seq>\d+)$")
 
 # TIFF data type -> the format character tifffile's `extratags` wants. Types are
 # numbered by the TIFF 6.0 spec; RATIONAL and SRATIONAL are pairs, hence '2I'
@@ -187,8 +192,7 @@ class Section:
     """One input scan: where it is, where it belongs in the stack, and the shape
     of the image inside it."""
     path: str
-    roll: str
-    seq: int
+    seq: Optional[int]      # the trailing `-N` of the name, if it has one
     width: int
     height: int
     colour_key: Tuple = ()
@@ -218,60 +222,66 @@ class SourceProfile:
 
 
 # --------------------------------------------------------------------------- #
-# Filenames
+# Names: the roll id, and the section files
 # --------------------------------------------------------------------------- #
-def parse_section_name(path: str) -> Tuple[str, int]:
-    """`(roll, seq)` from a `ROLLID-SCANSEQ.dng` path. Raises SectionError when
-    the name does not carry a trailing numeric sequence — including for a file
-    this tool wrote, whose name is `ROLLID.dng` with no sequence at all, which
-    is what keeps a finished join from being picked up as an input to the
-    next one."""
-    stem = os.path.splitext(os.path.basename(path))[0]
-    m = _SECTION_NAME.match(stem)
-    if not m:
-        raise SectionError(
-            f"{os.path.basename(path)}: not named ROLLID-SCANSEQ{SECTION_EXTENSION} "
-            f"(expected a trailing scan number, as in S0220-1{SECTION_EXTENSION})")
-    return m.group("roll"), int(m.group("seq"))
+def validate_roll_id(roll_id: Optional[str]) -> str:
+    """The roll id, stripped of surrounding whitespace, once it is known to be
+    usable as a file name. Raises SectionError when it is not: blank, a path
+    rather than a name, or a name the filesystem reserves."""
+    roll = (roll_id or "").strip()
+    if not roll:
+        raise SectionError("the roll id is blank — it names the joined sheet, "
+                           "so it cannot be")
+    if "/" in roll or "\0" in roll:
+        raise SectionError(f"roll id {roll!r} contains a '/' — it is a file "
+                           "name, not a path (use --out to choose the folder)")
+    if roll in (".", ".."):
+        raise SectionError(f"roll id {roll!r} is not a usable file name")
+    return roll
 
 
-def is_section_path(path: str) -> bool:
-    """True when `path` looks like a section of a roll: a `.dng` whose name ends
-    in a scan number. Cheap — it reads the name, not the file."""
-    if os.path.splitext(str(path))[1].lower() != SECTION_EXTENSION:
-        return False
-    try:
-        parse_section_name(str(path))
-    except SectionError:
-        return False
-    return True
+def scan_number(path: str) -> Optional[int]:
+    """The trailing `-N` of a section's name, or None when it has none."""
+    m = _SCAN_NUMBER.search(os.path.splitext(os.path.basename(path))[0])
+    return int(m.group("seq")) if m else None
 
 
-def collect_section_files(inputs: Sequence[str],
-                          recursive: bool = False) -> List[str]:
-    """Every section-shaped `.dng` under `inputs`, which may be files or
-    folders.
+def _natural_key(path: str) -> tuple:
+    """Sort key comparing the digit runs of a file's name as numbers, so
+    `S0220-2` sorts before `S0220-10`. The full path breaks ties, so the order
+    never depends on how the files were handed over."""
+    name = os.path.basename(path)
+    parts = re.split(r"(\d+)", name.casefold())
+    return (tuple((0, int(p), p) if p.isdigit() else (1, 0, p)
+                  for p in parts if p), path)
 
-    A file named explicitly is taken as given — if the user points at it, a
-    complaint about its name belongs in the error message, not in a silent
-    skip. A file merely FOUND inside a folder is filtered by name, so dropping a
-    whole scan folder on the droplet picks up `S0220-1.dng` and leaves the
-    joined `S0220.dng` beside it alone."""
+
+def collect_section_files(inputs: Sequence[str]) -> List[str]:
+    """The named section files, absolute, de-duplicated and in stacking order.
+
+    Only files are accepted, and only DNGs: a folder or any other kind of file
+    is refused rather than skipped, because every file named is taken to be a
+    section of the sheet, and a sheet silently missing one is worse than no
+    sheet. All the refusals are collected into one error, so a selection with
+    two wrong files says so once rather than one at a time."""
     found: List[str] = []
+    problems: List[str] = []
     for item in inputs:
         item = os.path.abspath(os.path.expanduser(str(item)))
+        name = os.path.basename(item)
         if os.path.isdir(item):
-            walker = os.walk(item) if recursive else [
-                (item, [], sorted(os.listdir(item)))]
-            for root, _dirs, names in walker:
-                found.extend(os.path.join(root, n) for n in sorted(names)
-                             if is_section_path(os.path.join(root, n)))
-        elif os.path.exists(item):
-            found.append(item)
+            problems.append(f"{name}: is a folder — name the section files "
+                            "themselves")
+        elif not os.path.exists(item):
+            problems.append(f"no such file: {item}")
+        elif os.path.splitext(item)[1].lower() != SECTION_EXTENSION:
+            problems.append(f"{name}: not a {SECTION_EXTENSION} file")
         else:
-            raise SectionError(f"no such file or folder: {item}")
-    # Stable, de-duplicated: the same file named twice is the same section.
-    return sorted(dict.fromkeys(found))
+            found.append(item)
+    if problems:
+        raise SectionError("\n".join(problems))
+    # The same file named twice is the same section.
+    return sorted(dict.fromkeys(found), key=_natural_key)
 
 
 # --------------------------------------------------------------------------- #
@@ -300,7 +310,6 @@ def read_section(path: str) -> Section:
     """Inspect `path` and describe it as a Section. Raises SectionError with a
     readable reason when the file is not a joinable linear DNG."""
     path = os.path.abspath(os.path.expanduser(str(path)))
-    roll, seq = parse_section_name(path)
     name = os.path.basename(path)
     try:
         with tifffile.TiffFile(os.path.normpath(path)) as tf:
@@ -324,7 +333,7 @@ def read_section(path: str) -> Section:
         raise SectionError(f"{name}: samples are {dtype}, expected uint16")
     if shape[0] <= 0 or shape[1] <= 0:
         raise SectionError(f"{name}: image is empty ({shape[0]}x{shape[1]})")
-    return Section(path=path, roll=roll, seq=seq, width=int(shape[1]),
+    return Section(path=path, seq=scan_number(path), width=int(shape[1]),
                    height=int(shape[0]), colour_key=key)
 
 
@@ -357,56 +366,40 @@ def open_plane(path: str):
 # --------------------------------------------------------------------------- #
 # Grouping and validation
 # --------------------------------------------------------------------------- #
-def group_into_rolls(sections: Iterable[Section]) -> Dict[str, List[Section]]:
-    """Sections grouped by roll id, each list in scan order. Rolls come back in
-    the order their first section was named."""
-    rolls: Dict[str, List[Section]] = {}
-    for s in sections:
-        rolls.setdefault(s.roll, []).append(s)
-    return {roll: sorted(items, key=lambda s: s.seq)
-            for roll, items in rolls.items()}
-
-
-def validate_roll(sections: Sequence[Section]) -> List[str]:
-    """Check a roll's sections can be stacked. Raises SectionError when they
-    cannot; returns warnings — things worth knowing that are not reasons to
-    stop — when they can."""
+def validate_sections(sections: Sequence[Section]) -> List[str]:
+    """Check a sheet's sections, in stacking order, can be stacked. Raises
+    SectionError when they cannot; returns warnings — things worth knowing that
+    are not reasons to stop — when they can."""
     if len(sections) < 2:
+        named = f" ({sections[0].name})" if sections else ""
         raise SectionError(
-            f"roll {sections[0].roll!r} has only {len(sections)} section "
-            f"({sections[0].name}) — a join needs at least two")
-
-    seen: Dict[int, Section] = {}
-    for s in sections:
-        if s.seq in seen:
-            raise SectionError(
-                f"roll {s.roll!r} has two section {s.seq}s: "
-                f"{seen[s.seq].name} and {s.name}")
-        seen[s.seq] = s
+            f"{len(sections)} section{named} — a join needs at least two")
 
     first = sections[0]
     for s in sections[1:]:
         if s.width != first.width:
             raise SectionError(
-                f"roll {s.roll!r}: {s.name} is {s.width} pixels wide but "
+                f"{s.name} is {s.width} pixels wide but "
                 f"{first.name} is {first.width} — sections of one sheet must "
                 "be scanned at the same width")
 
     warnings: List[str] = []
-    expected = list(range(first.seq, first.seq + len(sections)))
-    if [s.seq for s in sections] != expected:
-        got = ", ".join(str(s.seq) for s in sections)
-        warnings.append(f"scan numbers are not consecutive ({got}) — joining "
-                        "in numeric order anyway")
-    # Missing the FIRST section is the one gap the consecutiveness check above
-    # cannot see: 2, 3, 4 is a perfectly consecutive run. It is also the gap
-    # that produces a valid-looking sheet with the top quietly absent, so it is
-    # worth saying out loud even though numbering from something other than 1
-    # is a legitimate thing to do.
-    elif first.seq > 1:
-        warnings.append(
-            f"roll starts at section {first.seq}, not 1 — if section 1 was "
-            "meant to be included, this sheet is missing its top")
+    seqs = [s.seq for s in sections]
+    # Only names that all end in a scan number say anything about gaps.
+    if None not in seqs:
+        got = ", ".join(map(str, seqs))
+        if seqs != list(range(seqs[0], seqs[0] + len(seqs))):
+            warnings.append(f"scan numbers are not consecutive ({got}) — "
+                            "joining in filename order anyway")
+        # Missing the FIRST section is the one gap the check above cannot see:
+        # 2, 3, 4 is a perfectly consecutive run. It is also the gap that
+        # produces a valid-looking sheet with the top quietly absent, so it is
+        # worth saying out loud even though numbering from something other
+        # than 1 is a legitimate thing to do.
+        elif seqs[0] > 1:
+            warnings.append(
+                f"sheet starts at section {seqs[0]}, not 1 — if section 1 was "
+                "meant to be included, this sheet is missing its top")
     odd = [s for s in sections if s.colour_key != first.colour_key]
     if odd:
         warnings.append(
@@ -516,7 +509,7 @@ def _carry_frame_tag(tag, name: str, width: int, section_height: int,
 def read_profile(path: str, section_height: int,
                  joined_height: int) -> SourceProfile:
     """Harvest the metadata the joined file should carry from `path`, the
-    roll's first section.
+    sheet's first section.
 
     Never raises: a source whose metadata cannot be read still has pixels worth
     joining, and the joined file is a valid linear DNG on dng.py's own tags
