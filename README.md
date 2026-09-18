@@ -142,8 +142,11 @@ omits.**
 The sections came from a real device with a real colour spec, and stacking them
 changes none of it. VueScan's `ColorMatrix1`, `AsShotWhiteXY`,
 `UniqueCameraModel`, `Make`, `Model` and the scan DPI are re-emitted untouched,
-along with the capture date — lifted out of the EXIF sub-IFD into IFD0, where a
-converter looks for it, so the sheet still sorts by when it was scanned.
+along with the capture date. The joined sheet's `DateTimeOriginal` (and
+`DateTime`, if the source states none) is the first section's capture time —
+lifted out of the EXIF sub-IFD into IFD0, where a converter looks for it, so the
+sheet sorts by when it was scanned. A first section that records no date at all
+falls back to its file modification time.
 
 This is where the tool differs from trichrome. Trichrome *must* fabricate a
 colour spec, because a three-light merge is not colorimetric and no honest

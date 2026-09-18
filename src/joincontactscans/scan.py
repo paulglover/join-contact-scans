@@ -62,12 +62,14 @@ crop it is dropped and said so, because extending someone else's crop is a guess
 and a wrong guess here is invisible until the bottom of the sheet is missing.
 
 The EXIF sub-IFD is deliberately not carried. A scanner's holds a capture date
-and a colour-space code, the date is copied into IFD0's `DateTime` where a
-converter looks for it anyway, and `ColorSpace` means nothing in a LinearRaw
-file. Moving the rest would mean rewriting a gigabyte to relocate two tags.
+and a colour-space code. The date is restated in IFD0 as `DateTimeOriginal` —
+where TIFF/EP, and so DNG, lets it live, and where a converter reads capture
+time — and as `DateTime`; `ColorSpace` means nothing in a LinearRaw file.
+Moving the rest would mean rewriting a gigabyte to relocate two tags.
 """
 import os
 import re
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -533,24 +535,18 @@ def read_profile(path: str, section_height: int,
                     profile.ifd0.append(entry)
                     profile.codes.add(code)
 
-            # A capture date lives in the EXIF sub-IFD as often as in IFD0 —
-            # VueScan puts it there and nowhere else. If IFD0 states no
-            # DateTime, lift one, so the joined sheet still sorts by when it was
-            # scanned. Looked for both inside the EXIF IFD and loose in IFD0,
-            # because writers differ about where they leave it. See the module
-            # docstring on why the rest of the EXIF IFD stays where it is.
-            if 306 not in profile.codes:
-                exif = _tag_value(ifd0.tags.get(34665))
-                exif = exif if isinstance(exif, dict) else {}
-                for key, code in (("DateTimeOriginal", 36867),
-                                  ("DateTimeDigitized", 36868)):
-                    when = exif.get(key)
-                    if not isinstance(when, str) or not when.strip():
-                        when = _tag_value(ifd0.tags.get(code))
-                    if isinstance(when, str) and when.strip():
-                        profile.ifd0.append((306, "s", 0, when, True))
-                        profile.codes.add(306)
-                        break
+            # The joined sheet's capture time is the first section's. It is
+            # stated as DateTimeOriginal, the tag a converter shows as capture
+            # time, and — where the source states no DateTime of its own — as
+            # DateTime too, so the sheet sorts by when it was scanned either
+            # way. See `_capture_time` for where it is looked for.
+            when = _capture_time(ifd0, path)
+            if when is not None:
+                profile.ifd0.append((36867, "s", 0, when, True))
+                profile.codes.add(36867)
+                if 306 not in profile.codes:
+                    profile.ifd0.append((306, "s", 0, when, True))
+                    profile.codes.add(306)
 
             for code in _CARRY_RAW:
                 tag = page.tags.get(code)
@@ -585,6 +581,32 @@ def read_profile(path: str, section_height: int,
         profile.warnings.append(
             f"no metadata carried from {os.path.basename(str(path))}: {e}")
     return profile
+
+
+def _capture_time(ifd0, path: str) -> Optional[str]:
+    """When the section at `path` was scanned, as an EXIF date string
+    ("YYYY:MM:DD HH:MM:SS"), or None if nothing says.
+
+    What the file states about itself comes first: DateTimeOriginal, then
+    DateTimeDigitized, each looked for inside the EXIF sub-IFD and loose in
+    IFD0 because writers differ about where they leave it (VueScan uses the
+    EXIF IFD), then IFD0's DateTime. Only a file that states none of these
+    falls back to its modification time, which a copy may have reset."""
+    exif = _tag_value(ifd0.tags.get(34665))
+    exif = exif if isinstance(exif, dict) else {}
+    for key, code in (("DateTimeOriginal", 36867),
+                      ("DateTimeDigitized", 36868),
+                      (None, 306)):
+        when = exif.get(key) if key else None
+        if not isinstance(when, str) or not when.strip():
+            when = _tag_value(ifd0.tags.get(code))
+        if isinstance(when, str) and when.strip():
+            return when.strip()
+    try:
+        mtime = os.path.getmtime(os.path.normpath(str(path)))
+    except OSError:
+        return None
+    return time.strftime("%Y:%m:%d %H:%M:%S", time.localtime(mtime))
 
 
 def _resolution(page) -> Optional[Tuple[float, float]]:

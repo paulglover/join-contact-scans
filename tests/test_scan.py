@@ -1,5 +1,7 @@
 """Reading, naming, ordering and validating the sections."""
 import dataclasses
+import os
+import time
 
 import numpy as np
 import pytest
@@ -183,6 +185,32 @@ def test_profile_lifts_the_capture_date_out_of_exif(tmp_path):
                       datetime_digitized="2026:09:17 13:01:06")
     profile = scan.read_profile(str(tmp_path / "S0220-1.dng"), 4, 12)
     carried = {code: value for code, _f, _c, value, _w in profile.ifd0}
+    assert carried[306] == "2026:09:17 13:01:06"
+    assert carried[36867] == "2026:09:17 13:01:06"
+
+
+def test_profile_keeps_a_stated_datetime_beside_the_capture_time(tmp_path):
+    """DateTimeOriginal is the capture time; a DateTime the source states is
+    its own and is carried as it was."""
+    fix.write_section(tmp_path / "S0220-1.dng", fix.section_pixels(4, 4, 1),
+                      extra_ifd0=[(306, "s", 0, "2026:09:18 09:00:00", True)],
+                      datetime_digitized="2026:09:17 13:01:06")
+    profile = scan.read_profile(str(tmp_path / "S0220-1.dng"), 4, 12)
+    carried = {code: value for code, _f, _c, value, _w in profile.ifd0}
+    assert carried[306] == "2026:09:18 09:00:00"
+    assert carried[36867] == "2026:09:17 13:01:06"
+    assert [code for code, *_ in profile.ifd0].count(306) == 1
+
+
+def test_profile_falls_back_to_the_file_time_for_capture_time(tmp_path):
+    """A section that records no date of its own is dated by its file."""
+    path = tmp_path / "S0220-1.dng"
+    fix.write_section(path, fix.section_pixels(4, 4, 1))
+    when = time.mktime((2026, 9, 17, 13, 1, 6, 0, 0, -1))
+    os.utime(path, (when, when))
+    profile = scan.read_profile(str(path), 4, 12)
+    carried = {code: value for code, _f, _c, value, _w in profile.ifd0}
+    assert carried[36867] == "2026:09:17 13:01:06"
     assert carried[306] == "2026:09:17 13:01:06"
 
 
