@@ -17,7 +17,7 @@ Public API:
 
     from joincontactscans import plan_jobs, run_jobs
 """
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from .dng import (JOIN_MARKER, OUTPUT_EXTENSION, carries_join_marker,
                   read_joined_dng, verify_pixels, verify_structure,
