@@ -46,8 +46,8 @@ plist_set NSAppleEventsUsageDescription string \
     Join Contact Sheet Scans reveals the files it wrote in Finder.
 
 # --- Document types: what makes "Open With" offer this app ---------------- #
-# Folders as well as files: dropping a whole scan folder is the easy way to
-# join every roll in it at once.
+# DNG files only. Every file handed over is a section of one sheet, so a folder
+# is not something the tool accepts, and the app does not offer to open one.
 $plistbuddy -c "Delete :CFBundleDocumentTypes" "$plist" 2>/dev/null || true
 $plistbuddy -c "Add :CFBundleDocumentTypes array" "$plist"
 
@@ -66,13 +66,6 @@ for uti in com.adobe.raw-image public.camera-raw-image public.image; do
 done
 $plistbuddy -c "Add :CFBundleDocumentTypes:0:CFBundleTypeExtensions array" "$plist"
 $plistbuddy -c "Add :CFBundleDocumentTypes:0:CFBundleTypeExtensions:0 string dng" "$plist"
-
-$plistbuddy -c "Add :CFBundleDocumentTypes:1 dict" "$plist"
-$plistbuddy -c "Add :CFBundleDocumentTypes:1:CFBundleTypeName string 'Folder of scans'" "$plist"
-$plistbuddy -c "Add :CFBundleDocumentTypes:1:CFBundleTypeRole string Viewer" "$plist"
-$plistbuddy -c "Add :CFBundleDocumentTypes:1:LSHandlerRank string Alternate" "$plist"
-$plistbuddy -c "Add :CFBundleDocumentTypes:1:LSItemContentTypes array" "$plist"
-$plistbuddy -c "Add :CFBundleDocumentTypes:1:LSItemContentTypes:0 string public.folder" "$plist"
 
 # --- Re-sign ------------------------------------------------------------- #
 # osacompile ad-hoc signs the bundle; editing Info.plist afterwards invalidates
@@ -99,12 +92,40 @@ check() {   # label expected actual
     fi
 }
 
-# The command builder: quoting, including a path with a space.
+# The command builder: quoting, including a path with a space, and a roll ID
+# that would read as an option if it were not attached to its flag.
 built=$(osascript \
     -e "set s to load script POSIX file \"$scpt\"" \
-    -e 'tell s to buildCommand("/usr/bin/true", {"/a b/S0220-1.dng", "/S0220-2.dng"})')
+    -e 'tell s to buildCommand("/usr/bin/true", "S0220", "", {"/a b/S0220-1.dng", "/S0220-2.dng"})')
 check "command quoting" \
-    "'/usr/bin/true' '/a b/S0220-1.dng' '/S0220-2.dng' 2>&1" "$built"
+    "'/usr/bin/true' '--roll-id=S0220' '/a b/S0220-1.dng' '/S0220-2.dng' 2>&1" "$built"
+
+built=$(osascript \
+    -e "set s to load script POSIX file \"$scpt\"" \
+    -e 'tell s to buildCommand("/usr/bin/true", "-it'"'"'s", "/out dir", {"/S0220-1.dng"})')
+check "roll ID and output folder" \
+    "'/usr/bin/true' '--roll-id=-it'\\''s' '--out=/out dir' '/S0220-1.dng' 2>&1" "$built"
+
+# What the settings dialog refuses before it lets the join run.
+problems=$(osascript \
+    -e "set s to load script POSIX file \"$scpt\"" \
+    -e 'tell s to set a to settingsProblem("", false, "")' \
+    -e 'tell s to set b to settingsProblem("S0220", true, "")' \
+    -e 'tell s to set c to settingsProblem("S0220", false, "")' \
+    -e 'tell s to set d to settingsProblem("S0220", true, "/out")' \
+    -e '((a is not "") as text) & "/" & ((b is not "") as text) & "/" & ((c is "") as text) & "/" & ((d is "") as text)')
+check "blank roll ID and missing folder are refused" \
+    "true/true/true/true" "$problems"
+
+selection=$(osascript \
+    -e "set s to load script POSIX file \"$scpt\"" \
+    -e 'tell s to ((selectionProblem(1) is not "") as text) & "/" & ((selectionProblem(2) is "") as text)')
+check "a single file is refused before the dialog" "true/true" "$selection"
+
+trim=$(osascript \
+    -e "set s to load script POSIX file \"$scpt\"" \
+    -e 'tell s to trimmed("  S0220 " & tab & linefeed)')
+check "whitespace around a setting is trimmed" "S0220" "$trim"
 
 # The coalescing this app exists to do: two deliveries, one batch of four, and
 # an empty accumulator afterwards so the next selection starts clean.
@@ -118,5 +139,5 @@ check "split deliveries are gathered into one batch" "4/0" "$batch"
 
 [ "$fail" -eq 0 ] || exit 1
 
-echo "Built and registered. Open With: .dng files, and folders of them."
+echo "Built and registered. Open With: .dng files."
 echo "Self-tests passed."
