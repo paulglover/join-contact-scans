@@ -173,6 +173,24 @@ def test_capture_time_is_the_first_sections(tmp_path):
     assert fix.ifd0_tags(out)[36867] == "2026:09:17 13:01:06"
 
 
+def test_xmp_identifier_is_the_file_name_without_extension(tmp_path):
+    out, _ = _join(tmp_path, count=2)
+    xmp = bytes(fix.ifd0_tags(out)[700]).decode("utf-8")
+    assert "<dc:identifier>S0220</dc:identifier>" in xmp
+
+
+def test_xmp_identifier_names_the_final_file_not_the_temporary(tmp_path):
+    """join writes to a temporary name and renames it; the identifier is the
+    name the sheet ends up with."""
+    fix.write_section(tmp_path / "S0220-1.dng", fix.section_pixels(4, 6, 1))
+    profile = scan.read_profile(str(tmp_path / "S0220-1.dng"), 4, 4)
+    out = tmp_path / "S0220.dng.partial"
+    dng.write_joined_dng(str(out), [fix.section_pixels(4, 6, 1)], profile,
+                         name="S0220.dng")
+    xmp = bytes(fix.ifd0_tags(out)[700]).decode("utf-8")
+    assert "<dc:identifier>S0220</dc:identifier>" in xmp
+
+
 def test_writes_nothing_into_image_description(tmp_path):
     """ImageDescription belongs to whoever owns the image. The source leaves it
     empty, so the join leaves it empty — what the sheet was made from is

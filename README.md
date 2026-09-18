@@ -148,6 +148,10 @@ lifted out of the EXIF sub-IFD into IFD0, where a converter looks for it, so the
 sheet sorts by when it was scanned. A first section that records no date at all
 falls back to its file modification time.
 
+The joined file's own name, without the extension (`S0220`), is written into
+its XMP as `dc:identifier`, so the sheet can still be identified after a
+catalogue renames it.
+
 This is where the tool differs from trichrome. Trichrome *must* fabricate a
 colour spec, because a three-light merge is not colorimetric and no honest
 matrix exists for it. Here one exists and the scanner wrote it down. (For

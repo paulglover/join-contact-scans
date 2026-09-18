@@ -90,6 +90,7 @@ thumbnail (preview only — the one place a gamma is applied, and it touches no
 image data), and the full-resolution linear image lives in a SubIFD.
 """
 import os
+from xml.sax.saxutils import escape as xml_escape
 from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -105,6 +106,7 @@ OUTPUT_EXTENSION = ".dng"
 JOIN_MARKER = "JoinContactScans:vertical-join-linear-v1"
 
 # DNG tag numbers used below, named so the extratags lists stay readable.
+_TAG_XMP = 700
 _TAG_DNG_VERSION = 50706
 _TAG_DNG_BACKWARD_VERSION = 50707
 _TAG_UNIQUE_CAMERA_MODEL = 50708
@@ -273,7 +275,26 @@ def carries_join_marker(path) -> bool:
         return False
 
 
-def _added_tags(profile: SourceProfile, sources: Sequence[str]
+def xmp_packet(identifier: str) -> bytes:
+    """A minimal XMP packet stating `identifier` as dc:identifier — the name
+    the joined sheet was written under, so a catalogue that has renamed the
+    file can still say what it was called."""
+    return (
+        '<?xpacket begin="\ufeff" id="W5M0MpCehiHzreSzNTczkc9d"?>\n'
+        '<x:xmpmeta xmlns:x="adobe:ns:meta/">\n'
+        ' <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\n'
+        '  <rdf:Description rdf:about=""'
+        ' xmlns:dc="http://purl.org/dc/elements/1.1/">\n'
+        f'   <dc:identifier>{xml_escape(identifier)}</dc:identifier>\n'
+        '  </rdf:Description>\n'
+        ' </rdf:RDF>\n'
+        '</x:xmpmeta>\n'
+        '<?xpacket end="w"?>'
+    ).encode("utf-8")
+
+
+def _added_tags(profile: SourceProfile, sources: Sequence[str],
+                name: Optional[str] = None
                 ) -> Tuple[List[tuple], List[tuple]]:
     """The `(ifd0, raw)` extratags this module contributes: the version stamp,
     the provenance, and a linear-declaration default for each tag the source
@@ -314,6 +335,13 @@ def _added_tags(profile: SourceProfile, sources: Sequence[str]
     # sheet arriving with a sentence this tool made up would displace that.
     # What the file was joined from is already recorded, in Software (the join
     # marker) and OriginalRawFileName.
+    #
+    # XMP carries the name the sheet was written under, without its
+    # extension, as dc:identifier. The sources' own XMP is not carried (it is
+    # not in scan._CARRY_IFD0), so this packet is the whole of the file's XMP.
+    if name:
+        packet = xmp_packet(os.path.splitext(name)[0])
+        ifd0.append((_TAG_XMP, "B", len(packet), packet, True))
 
     raw: List[tuple] = []
     if _TAG_BLACK_LEVEL_REPEAT_DIM not in have:
@@ -327,13 +355,17 @@ def _added_tags(profile: SourceProfile, sources: Sequence[str]
 
 def write_joined_dng(path: str, planes: Sequence, profile: SourceProfile,
                      sources: Sequence[str] = (),
-                     version: Optional[str] = None) -> None:
+                     version: Optional[str] = None,
+                     name: Optional[str] = None) -> None:
     """Write `planes` — (H, W, 3) uint16 array-likes, in stacking order — to
     `path` as one uncompressed linear DNG. Raises JoinError on failure.
 
     The pixels written are exactly the pixels read, in order, unchanged.
     `profile` is the first section's metadata (scan.read_profile) and `sources`
-    the section paths, used for provenance."""
+    the section paths, used for provenance. `name` is the file name the sheet
+    will finally have, stated as XMP dc:identifier; it defaults to the
+    basename of `path`, and is given separately for a caller that writes to a
+    temporary file and renames it."""
     if not planes:
         raise JoinError("nothing to write: no sections")
     widths = {int(p.shape[1]) for p in planes}
@@ -357,7 +389,8 @@ def write_joined_dng(path: str, planes: Sequence, profile: SourceProfile,
             "at a lower resolution.")
 
     rows_per_strip = max(1, min(height, _STRIP_TARGET_BYTES // max(1, row_bytes)))
-    ifd0_added, raw_added = _added_tags(profile, sources)
+    ifd0_added, raw_added = _added_tags(
+        profile, sources, name or os.path.basename(path))
     ifd0_tags = list(profile.ifd0) + ifd0_added
     raw_tags = list(profile.raw) + raw_added
     step = thumbnail_step(width, height)

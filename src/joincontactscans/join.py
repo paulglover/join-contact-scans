@@ -172,7 +172,8 @@ def run_job(job: Job, force: bool = False, verify: bool = True,
                                             job.sections[0].height, job.height)
             result.warnings.extend(profile.warnings)
             dng_mod.write_joined_dng(partial, planes, profile,
-                                     sources=job.sources, version=version)
+                                     sources=job.sources, version=version,
+                                     name=os.path.basename(job.output))
         # Outside the ExitStack: the maps of the sources are closed, and the
         # verification below opens the written file fresh, as a reader would.
         dng_mod.verify_structure(partial, expect_shape=(job.height, job.width))
