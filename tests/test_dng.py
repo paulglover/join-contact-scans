@@ -158,6 +158,21 @@ def test_stamps_a_recognisable_marker(tmp_path):
     assert fix.ifd0_tags(out)[50827] == "S0220-1.dng"
 
 
+def test_capture_time_is_the_first_sections(tmp_path):
+    """DateTimeOriginal on the joined sheet is when its first section was
+    scanned."""
+    fix.write_section(tmp_path / "S0220-1.dng", fix.section_pixels(4, 6, 1),
+                      datetime_digitized="2026:09:17 13:01:06")
+    fix.write_section(tmp_path / "S0220-2.dng", fix.section_pixels(4, 6, 2),
+                      datetime_digitized="2026:09:17 13:04:40")
+    sources = [str(tmp_path / f"S0220-{i}.dng") for i in (1, 2)]
+    out = tmp_path / "S0220.dng"
+    profile = scan.read_profile(sources[0], 4, 8)
+    planes = [fix.section_pixels(4, 6, i) for i in (1, 2)]
+    dng.write_joined_dng(str(out), planes, profile, sources)
+    assert fix.ifd0_tags(out)[36867] == "2026:09:17 13:01:06"
+
+
 def test_writes_nothing_into_image_description(tmp_path):
     """ImageDescription belongs to whoever owns the image. The source leaves it
     empty, so the join leaves it empty — what the sheet was made from is
