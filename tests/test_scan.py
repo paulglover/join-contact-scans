@@ -107,6 +107,21 @@ def test_read_section(tmp_path):
     assert (s.seq, s.width, s.height) == (2, 13, 9)
 
 
+def test_read_section_accepts_monochrome(tmp_path):
+    fix.write_section(tmp_path / "S0220-1.dng",
+                      fix.section_pixels(9, 13, seed=1, samples=1))
+    s = scan.read_section(str(tmp_path / "S0220-1.dng"))
+    assert (s.width, s.height, s.samples) == (13, 9, 1)
+    assert s.is_monochrome
+
+
+def test_open_plane_gives_monochrome_pixels(tmp_path):
+    pixels = fix.write_section(tmp_path / "S0220-1.dng",
+                               fix.section_pixels(6, 5, seed=3, samples=1))
+    with scan.open_plane(str(tmp_path / "S0220-1.dng")) as plane:
+        assert np.array_equal(np.asarray(plane), pixels)
+
+
 def test_read_section_rejects_mosaiced(tmp_path):
     """A CFA DNG must not be joined: section two's mosaic phase depends on
     section one's height, and getting that wrong looks like a colour problem
@@ -155,6 +170,15 @@ def test_validate_rejects_mismatched_width(tmp_path):
     fix.write_section(tmp_path / "S0220-1.dng", fix.section_pixels(4, 11, 1))
     fix.write_section(tmp_path / "S0220-2.dng", fix.section_pixels(4, 12, 2))
     with pytest.raises(scan.SectionError, match="pixels wide"):
+        scan.validate_sections(_sections(
+            [tmp_path / "S0220-1.dng", tmp_path / "S0220-2.dng"]))
+
+
+def test_validate_rejects_mixed_colour_and_monochrome(tmp_path):
+    fix.write_section(tmp_path / "S0220-1.dng", fix.section_pixels(4, 11, 1))
+    fix.write_section(tmp_path / "S0220-2.dng",
+                      fix.section_pixels(4, 11, 2, samples=1))
+    with pytest.raises(scan.SectionError, match="same mode"):
         scan.validate_sections(_sections(
             [tmp_path / "S0220-1.dng", tmp_path / "S0220-2.dng"]))
 

@@ -247,3 +247,55 @@ def test_refuses_a_join_past_the_tiff_offset_limit(tmp_path, monkeypatch):
         dng.write_joined_dng(str(tmp_path / "x.dng"), planes,
                              scan.SourceProfile())
     assert not (tmp_path / "x.dng").exists()
+
+
+# --- Monochrome ------------------------------------------------------------ #
+def test_monochrome_pixels_are_identical_section_for_section(tmp_path):
+    out, joined = _join(tmp_path, count=4, height=7, width=11, samples=1)
+    got = dng.read_joined_dng(str(out))
+    assert got.shape == (28, 11)
+    assert np.array_equal(got, joined)
+
+
+def test_monochrome_output_is_a_one_sample_linear_dng(tmp_path):
+    out, _ = _join(tmp_path, count=2, samples=1)
+    raw, tags = fix.subifd_tags(out), fix.ifd0_tags(out)
+    assert raw[262] == scan.PHOTOMETRIC_LINEAR_RAW
+    assert raw[277] == 1
+    assert raw[258] == 16
+    assert tags[262] == 1                   # thumbnail is greyscale
+    assert tags[277] == 1
+
+
+def test_monochrome_gets_no_colour_spec(tmp_path):
+    """The spec ties the colour tags to the number of colour planes. A 3x3
+    matrix on a one-plane image is not a placeholder, it is a malformed file."""
+    out, _ = _join(tmp_path, count=2, samples=1)
+    raw, tags = fix.subifd_tags(out), fix.ifd0_tags(out)
+    for code in (50721, 50964, 50778, 50728, 50729):
+        assert code not in tags
+    assert raw[50714] == 0                  # BlackLevel, one value
+    assert raw[50717] == 65535              # WhiteLevel, one value
+    assert tuple(tags[50940]) == dng.IDENTITY_TONE_CURVE
+    assert tags[51110] == 1                 # DefaultBlackRender: None
+
+
+def test_verify_pixels_catches_a_corrupted_monochrome_image(tmp_path):
+    paths, _ = fix.write_roll(tmp_path, count=3, height=5, width=5, samples=1)
+    out, _ = _join(tmp_path, count=3, height=5, width=5, samples=1)
+    dng.verify_structure(str(out), expect_shape=(15, 5))
+    with tifffile.TiffFile(str(out)) as tf:
+        offset = tf.pages[0].pages[0].aspage().dataoffsets[0]
+    with open(out, "r+b") as fh:            # row 7 of the join: section 2
+        fh.seek(offset + (7 * 5 + 2) * 2)
+        fh.write(b"\xff\xff")
+    with pytest.raises(dng.JoinError, match="section 2"):
+        dng.verify_pixels(str(out), [str(p) for p in paths])
+
+
+def test_refuses_to_mix_colour_and_monochrome(tmp_path):
+    planes = [fix.section_pixels(4, 5, 1), fix.section_pixels(4, 5, 2,
+                                                              samples=1)]
+    with pytest.raises(dng.JoinError, match="mix"):
+        dng.write_joined_dng(str(tmp_path / "x.dng"), planes,
+                             scan.SourceProfile())

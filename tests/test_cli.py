@@ -20,6 +20,14 @@ def test_joins_named_files(tmp_path, capsys):
                           joined)
 
 
+def test_joins_monochrome_files(tmp_path, capsys):
+    paths, joined = fix.write_roll(tmp_path, count=3, samples=1)
+    assert cli.main(_args(paths)) == 0
+    assert "verified 3/3 sections pixel-identical" in capsys.readouterr().out
+    assert np.array_equal(dng.read_joined_dng(str(tmp_path / "S0220.dng")),
+                          joined)
+
+
 def test_the_roll_id_names_the_output(tmp_path):
     paths, _ = fix.write_roll(tmp_path, count=2)
     assert cli.main(["-i", "Portra 400", *map(str, paths)]) == 0

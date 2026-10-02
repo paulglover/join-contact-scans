@@ -7,6 +7,8 @@ choice of colour tags — so the tests exercise the same code paths the real
 scans do. `extra_ifd0` and `extra_raw` let a test add or withhold a tag and
 check what the writer does about it.
 """
+import struct
+
 import numpy as np
 import tifffile
 
@@ -39,11 +41,21 @@ VUESCAN_RAW = (
     (281, "H", 3, (65535, 65535, 65535), False),
 )
 
+# What VueScan writes for a black-and-white scan: one sample per pixel and no
+# colour tags at all, which the DNG spec allows when there is one colour plane.
+VUESCAN_MONO_IFD0 = tuple(t for t in VUESCAN_IFD0 if t[0] not in (50721, 50729))
+VUESCAN_MONO_RAW = (
+    (280, "H", 1, 0, False),
+    (281, "H", 1, 65535, False),
+)
 
-def section_pixels(height, width, seed):
-    """Deterministic noise, so a test can assert on exact bytes."""
+
+def section_pixels(height, width, seed, samples=3):
+    """Deterministic noise, so a test can assert on exact bytes. `samples=1`
+    gives a monochrome (H, W) plane."""
+    shape = (height, width) + ((samples,) if samples > 1 else ())
     return np.random.default_rng(seed).integers(
-        0, 65536, (height, width, 3), dtype=np.uint16)
+        0, 65536, shape, dtype=np.uint16)
 
 
 def write_section(path, pixels, extra_ifd0=(), extra_raw=(),
@@ -51,7 +63,16 @@ def write_section(path, pixels, extra_ifd0=(), extra_raw=(),
                   resolution=(1200, 1200), datetime_digitized=None,
                   photometric=34892):
     """Write `pixels` as a VueScan-shaped linear DNG at `path`. Returns
-    `pixels`, so a test can write and remember in one line."""
+    `pixels`, so a test can write and remember in one line.
+
+    A 2-D `pixels` is written as a monochrome scan: one sample per pixel, a
+    greyscale thumbnail, and — unless the caller says otherwise — VueScan's
+    monochrome tags, with no colour spec."""
+    mono = pixels.ndim == 2 and photometric != 32803
+    if mono and ifd0 is VUESCAN_IFD0:
+        ifd0 = VUESCAN_MONO_IFD0
+    if mono and raw is VUESCAN_RAW:
+        raw = VUESCAN_MONO_RAW
     ifd0_tags = list(ifd0) + list(extra_ifd0)
     if datetime_digitized is not None:
         # DateTimeDigitized, loose in IFD0 rather than inside a real EXIF
@@ -64,25 +85,37 @@ def write_section(path, pixels, extra_ifd0=(), extra_raw=(),
     # which is the only shape that is a valid CFA image.
     if photometric == 32803 and pixels.ndim == 3:
         pixels = pixels[..., 0]
-    thumb = np.zeros((8, 8, 3), np.uint8)
+    thumb = np.zeros((8, 8) if mono else (8, 8, 3), np.uint8)
     with tifffile.TiffWriter(str(path)) as tw:
-        tw.write(thumb, photometric="rgb", compression=None, subfiletype=1,
+        tw.write(thumb, photometric="minisblack" if mono else "rgb",
+                 compression=None, subfiletype=1,
                  subifds=1, metadata=None, software=software,
                  resolution=(32, 32), resolutionunit=2, extratags=ifd0_tags)
-        tw.write(pixels, photometric=photometric, planarconfig="contig",
+        # tifffile will not write a one-sample LinearRaw page, so a
+        # monochrome one is written as BlackIsZero and restated below.
+        tw.write(pixels, photometric="minisblack" if mono else photometric,
+                 planarconfig=None if pixels.ndim == 2 else "contig",
                  compression=None, subfiletype=0, rowsperstrip=1,
                  metadata=None, resolution=resolution, resolutionunit=2,
                  extratags=list(raw) + list(extra_raw))
+    if mono:
+        with tifffile.TiffFile(str(path)) as tf:
+            tag = tf.pages[0].pages[0].aspage().tags[262]
+            offset, byteorder = tag.valueoffset, tf.byteorder
+        with open(path, "r+b") as fh:
+            fh.seek(offset)
+            fh.write(struct.pack(byteorder + "H", photometric))
     return pixels
 
 
 def write_roll(directory, roll="S0220", count=3, height=7, width=11,
-               **kwargs):
+               samples=3, **kwargs):
     """A whole roll of sections. Returns `(paths, joined)` — the section paths
-    in scan order, and the array they should join into."""
+    in scan order, and the array they should join into. `samples=1` makes it a
+    monochrome roll."""
     paths, blocks = [], []
     for i in range(1, count + 1):
-        pixels = section_pixels(height, width, seed=1000 + i)
+        pixels = section_pixels(height, width, seed=1000 + i, samples=samples)
         path = directory / f"{roll}-{i}.dng"
         write_section(path, pixels, **kwargs)
         paths.append(path)
