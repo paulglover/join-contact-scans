@@ -29,13 +29,15 @@ What counts as joinable
 Stacking two images vertically only means anything if they agree on everything
 except height. This module requires, and says plainly when it does not get:
 
-* a LinearRaw image (`PhotometricInterpretation = 34892`) — three samples per
-  pixel, already demosaiced. A CFA (Bayer) DNG is rejected rather than joined,
-  because the mosaic phase of section two depends on section one's height being
-  even, and a file that silently got that wrong looks like a colour problem
-  three steps later,
+* a LinearRaw image (`PhotometricInterpretation = 34892`) — already
+  demosaiced, with three samples per pixel (colour) or one (monochrome, which
+  is what VueScan writes for a black-and-white scan). A CFA (Bayer) DNG is
+  rejected rather than joined, because the mosaic phase of section two depends
+  on section one's height being even, and a file that silently got that wrong
+  looks like a colour problem three steps later,
 * 16-bit unsigned samples,
-* the same pixel width as every other section of the sheet.
+* the same pixel width, and the same number of samples per pixel, as every
+  other section of the sheet.
 
 Reading the pixels
 ------------------
@@ -196,6 +198,11 @@ class Section:
     width: int
     height: int
     colour_key: Tuple = ()
+    samples: int = 3        # samples per pixel: 3 for colour, 1 for monochrome
+
+    @property
+    def is_monochrome(self) -> bool:
+        return self.samples == 1
 
     @property
     def name(self) -> str:
@@ -326,20 +333,28 @@ def read_section(path: str) -> Section:
     except Exception as e:
         raise SectionError(f"{name}: cannot be read as a DNG: {e}") from e
 
-    if len(shape) != 3 or shape[2] != 3:
+    # A monochrome LinearRaw image is one sample per pixel, which tifffile
+    # hands back as a 2-D plane.
+    if len(shape) == 2:
+        samples = 1
+    elif len(shape) == 3 and shape[2] == 3:
+        samples = 3
+    else:
         raise SectionError(f"{name}: LinearRaw image is {shape}, expected "
-                           "(height, width, 3)")
+                           "(height, width, 3) or, for monochrome, "
+                           "(height, width)")
     if dtype != np.uint16:
         raise SectionError(f"{name}: samples are {dtype}, expected uint16")
     if shape[0] <= 0 or shape[1] <= 0:
         raise SectionError(f"{name}: image is empty ({shape[0]}x{shape[1]})")
     return Section(path=path, seq=scan_number(path), width=int(shape[1]),
-                   height=int(shape[0]), colour_key=key)
+                   height=int(shape[0]), colour_key=key, samples=samples)
 
 
 @contextmanager
 def open_plane(path: str):
-    """Yield the (H, W, 3) uint16 LinearRaw image of `path` as an array-like.
+    """Yield the uint16 LinearRaw image of `path` as an array-like: (H, W, 3)
+    for colour, (H, W) for monochrome.
 
     Memory-mapped when the file permits, so a caller that touches every
     fiftieth row reads a fiftieth of the file. The map is read-only and is
@@ -382,6 +397,12 @@ def validate_sections(sections: Sequence[Section]) -> List[str]:
                 f"{s.name} is {s.width} pixels wide but "
                 f"{first.name} is {first.width} — sections of one sheet must "
                 "be scanned at the same width")
+        if s.samples != first.samples:
+            kind = {1: "monochrome", 3: "colour"}
+            raise SectionError(
+                f"{s.name} is {kind.get(s.samples, s.samples)} but "
+                f"{first.name} is {kind.get(first.samples, first.samples)} — "
+                "sections of one sheet must be scanned in the same mode")
 
     warnings: List[str] = []
     seqs = [s.seq for s in sections]

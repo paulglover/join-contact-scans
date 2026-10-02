@@ -24,6 +24,24 @@ the orange mask without the controls built for it.
 the file through the raw pipeline instead, where it belongs. This mirrors what
 trichrome writes, for the same reason.
 
+Monochrome
+----------
+A black-and-white scan arrives as LinearRaw with ONE sample per pixel, and is
+written back out the same way. The DNG spec ties the colour tags to the number
+of colour planes — a ColorMatrix is `3 x ColorPlanes` values, AsShotNeutral is
+`ColorPlanes` — and requires neither when there is only one plane. So for a
+monochrome join no colour spec is fabricated (a 3x3 matrix on a one-plane
+image is not a placeholder, it is a malformed file), and BlackLevel and
+WhiteLevel are stated once rather than per channel. The tone-curve and
+black-render declarations apply all the same.
+
+tifffile will not write a one-sample LinearRaw page — its table of samples per
+photometric has LinearRaw at three — so the monochrome image is written as
+BlackIsZero and its PhotometricInterpretation is then restated as LinearRaw in
+place: one SHORT, two bytes, in a tag whose value lives inside the IFD entry.
+Nothing else about the page differs between the two, and `verify_structure`
+reads the result back as LinearRaw before anything is reported as done.
+
 What is carried and what is added
 ---------------------------------
 The policy is one sentence: **carry through everything the source states about
@@ -41,7 +59,7 @@ scanner wrote it down.
 What VueScan does not write, this module adds, because their absence is not
 neutral — it is an invitation for the converter to supply its own:
 
-* `BlackLevel = 0` and `WhiteLevel = 65535`. VueScan states the range as
+* `BlackLevel = 0` and `WhiteLevel = 65535`, one value per sample. VueScan states the range as
   MinSampleValue/MaxSampleValue, which is a TIFF tag a DNG reader does not
   consult. Without the DNG tags a reader falls back to its own guess at the
   sensor's pedestal.
@@ -59,16 +77,17 @@ while `DNGBackwardVersion` stays at 1.2.0.0: a 1.2 reader that has never heard
 of that tag skips it and renders as it always would, which is a different
 default and not a failure to read the file.
 
-Only if the source states no colour matrix at all does this module fall back to
-a fabricated one — the sRGB/Rec.709 primaries, with AsShotNeutral at (1, 1, 1).
-That is a placeholder to grade from, not a measurement, and it is a last resort
-rather than the normal path.
+Only if a colour source states no colour matrix at all does this module fall
+back to a fabricated one — the sRGB/Rec.709 primaries, with AsShotNeutral at
+(1, 1, 1). That is a placeholder to grade from, not a measurement, and it is a
+last resort rather than the normal path. A monochrome source never gets one.
 
 Compression and size
 --------------------
 DNG's lossless choices are uncompressed and lossless JPEG; ZIP/deflate is not
 among them for 16-bit integer data, and libraw rejects such a file outright. So
-this writes uncompressed, and the image is exactly `width x height x 6` bytes.
+this writes uncompressed, and the image is exactly `width x height x 2` bytes
+per sample — x 6 for colour, x 2 for monochrome.
 
 Uncompressed also means a joined sheet gets large, and a classic TIFF addresses
 its data with 32-bit offsets. BigTIFF would lift that ceiling but is not valid
@@ -86,10 +105,11 @@ fiftieth of each file.
 Layout
 ------
 As the spec prescribes, and as trichrome writes: IFD0 holds a small sRGB-encoded
-thumbnail (preview only — the one place a gamma is applied, and it touches no
+thumbnail (greyscale for a monochrome join) (preview only — the one place a gamma is applied, and it touches no
 image data), and the full-resolution linear image lives in a SubIFD.
 """
 import os
+import struct
 from xml.sax.saxutils import escape as xml_escape
 from typing import List, Optional, Sequence, Tuple
 
@@ -205,7 +225,8 @@ def thumbnail_step(width: int, height: int) -> int:
 
 
 def build_thumbnail(planes: Sequence, step: int) -> np.ndarray:
-    """A small 8-bit sRGB-encoded preview of the joined image, for IFD0.
+    """A small 8-bit sRGB-encoded preview of the joined image, for IFD0 —
+    (h, w, 3) for colour planes, (h, w) for monochrome ones.
 
     Built without ever forming the joined image. A thumbnail pixel is a sample
     of the join on a regular grid of stride `step`, so for each section this
@@ -225,7 +246,8 @@ def build_thumbnail(planes: Sequence, step: int) -> np.ndarray:
             pieces.append(np.asarray(plane[start::step, ::step]))
         offset += plane.shape[0]
     if not pieces:
-        return np.zeros((1, 1, 3), np.uint8)
+        return np.zeros((1, 1) + tuple(planes[0].shape[2:]) if planes
+                        else (1, 1, 3), np.uint8)
     linear = np.concatenate(pieces, axis=0).astype(np.float32) / 65535.0
     encoded = np.where(linear <= 0.0031308, linear * 12.92,
                        1.055 * np.power(np.clip(linear, 0.0, None), 1 / 2.4)
@@ -294,12 +316,14 @@ def xmp_packet(identifier: str) -> bytes:
 
 
 def _added_tags(profile: SourceProfile, sources: Sequence[str],
-                identifier: Optional[str] = None
+                identifier: Optional[str] = None, samples: int = 3
                 ) -> Tuple[List[tuple], List[tuple]]:
     """The `(ifd0, raw)` extratags this module contributes: the version stamp,
     the provenance, and a linear-declaration default for each tag the source
-    left unstated. See the module docstring."""
+    left unstated. `samples` is the image's samples per pixel; a monochrome
+    image (1) gets no colour spec. See the module docstring."""
     have = profile.codes
+    colour = samples > 1
     ifd0: List[tuple] = [
         (_TAG_DNG_VERSION, "B", 4, (1, 4, 0, 0), True),
         (_TAG_DNG_BACKWARD_VERSION, "B", 4, (1, 2, 0, 0), True),
@@ -307,8 +331,11 @@ def _added_tags(profile: SourceProfile, sources: Sequence[str],
     if _TAG_UNIQUE_CAMERA_MODEL not in have:
         ifd0.append((_TAG_UNIQUE_CAMERA_MODEL, "s", 0, FALLBACK_CAMERA_MODEL,
                      True))
-    # A colour spec is fabricated only when the source states none at all.
-    if _TAG_COLOR_MATRIX_1 not in have and _TAG_COLOR_MATRIX_2 not in have:
+    # A colour spec is fabricated only when the source states none at all, and
+    # never for monochrome, where the spec requires none and a 3x3 matrix
+    # would not match the single colour plane.
+    if (colour and _TAG_COLOR_MATRIX_1 not in have
+            and _TAG_COLOR_MATRIX_2 not in have):
         ifd0.extend([
             (_TAG_COLOR_MATRIX_1, "2i", 9, _rational(_SRGB_COLOR_MATRIX_1),
              True),
@@ -317,7 +344,8 @@ def _added_tags(profile: SourceProfile, sources: Sequence[str],
             (_TAG_CALIBRATION_ILLUMINANT_1, "H", 1, _ILLUMINANT_D65, True),
         ])
     # AsShotNeutral and AsShotWhiteXY are alternatives; the spec forbids both.
-    if _TAG_AS_SHOT_NEUTRAL not in have and _TAG_AS_SHOT_WHITE_XY not in have:
+    if (colour and _TAG_AS_SHOT_NEUTRAL not in have
+            and _TAG_AS_SHOT_WHITE_XY not in have):
         ifd0.append((_TAG_AS_SHOT_NEUTRAL, "2I", 3,
                      _rational((1.0, 1.0, 1.0)), True))
     if _TAG_PROFILE_TONE_CURVE not in have:
@@ -347,9 +375,10 @@ def _added_tags(profile: SourceProfile, sources: Sequence[str],
     if _TAG_BLACK_LEVEL_REPEAT_DIM not in have:
         raw.append((_TAG_BLACK_LEVEL_REPEAT_DIM, "H", 2, (1, 1), False))
     if _TAG_BLACK_LEVEL not in have:
-        raw.append((_TAG_BLACK_LEVEL, "H", 3, (0, 0, 0), False))
+        raw.append((_TAG_BLACK_LEVEL, "H", samples, (0,) * samples, False))
     if _TAG_WHITE_LEVEL not in have:
-        raw.append((_TAG_WHITE_LEVEL, "I", 3, (65535, 65535, 65535), False))
+        raw.append((_TAG_WHITE_LEVEL, "I", samples, (65535,) * samples,
+                    False))
     return ifd0, raw
 
 
@@ -357,8 +386,9 @@ def write_joined_dng(path: str, planes: Sequence, profile: SourceProfile,
                      sources: Sequence[str] = (),
                      version: Optional[str] = None,
                      identifier: Optional[str] = None) -> None:
-    """Write `planes` — (H, W, 3) uint16 array-likes, in stacking order — to
-    `path` as one uncompressed linear DNG. Raises JoinError on failure.
+    """Write `planes` — uint16 array-likes, in stacking order, all (H, W, 3)
+    or all (H, W) for monochrome — to `path` as one uncompressed linear DNG.
+    Raises JoinError on failure.
 
     The pixels written are exactly the pixels read, in order, unchanged.
     `profile` is the first section's metadata (scan.read_profile) and `sources`
@@ -372,13 +402,17 @@ def write_joined_dng(path: str, planes: Sequence, profile: SourceProfile,
         raise JoinError(f"sections have different widths: "
                         f"{sorted(widths)}")
     for p in planes:
-        if np.dtype(p.dtype) != np.uint16 or len(p.shape) != 3 or p.shape[2] != 3:
-            raise JoinError(f"expected (H, W, 3) uint16 sections, got "
-                            f"shape={tuple(p.shape)} dtype={p.dtype}")
+        if (np.dtype(p.dtype) != np.uint16
+                or tuple(p.shape[2:]) not in ((), (3,))):
+            raise JoinError(f"expected (H, W, 3) or (H, W) uint16 sections, "
+                            f"got shape={tuple(p.shape)} dtype={p.dtype}")
+    if len({len(p.shape) for p in planes}) != 1:
+        raise JoinError("sections mix colour and monochrome images")
 
     width = widths.pop()
     height = int(sum(p.shape[0] for p in planes))
-    row_bytes = width * 3 * 2
+    samples = 1 if len(planes[0].shape) == 2 else 3
+    row_bytes = width * samples * 2
     total = height * row_bytes
     if total > _MAX_TIFF_BYTES:
         raise JoinError(
@@ -390,7 +424,7 @@ def write_joined_dng(path: str, planes: Sequence, profile: SourceProfile,
     rows_per_strip = max(1, min(height, _STRIP_TARGET_BYTES // max(1, row_bytes)))
     ifd0_added, raw_added = _added_tags(
         profile, sources,
-        identifier or os.path.splitext(os.path.basename(path))[0])
+        identifier or os.path.splitext(os.path.basename(path))[0], samples)
     ifd0_tags = list(profile.ifd0) + ifd0_added
     raw_tags = list(profile.raw) + raw_added
     step = thumbnail_step(width, height)
@@ -418,32 +452,59 @@ def write_joined_dng(path: str, planes: Sequence, profile: SourceProfile,
             # ImageDescription: a tifffile convention, meaningless to a DNG
             # reader, and it would sit in the slot the source's description
             # goes.
-            tw.write(thumb, photometric="rgb", compression=None, subfiletype=1,
+            tw.write(thumb, photometric="rgb" if samples == 3 else "minisblack",
+                     compression=None, subfiletype=1,
                      subifds=1, extratags=ifd0_tags, metadata=None,
                      software=software, resolution=thumb_res,
                      resolutionunit=profile.resolution_unit)
             # planarconfig is stated rather than inferred: 34892 is not a
             # photometric tifffile treats as having samples, so without it the
             # (H, W, 3) data is written as H pages of W x 3 grey instead of one
-            # RGB image — and DNG requires chunky data anyway.
+            # RGB image — and DNG requires chunky data anyway. Monochrome is
+            # written as BlackIsZero and restated below; see the module
+            # docstring.
+            if samples == 3:
+                shape, photometric, planar = ((height, width, 3),
+                                              PHOTOMETRIC_LINEAR_RAW, "contig")
+            else:
+                shape, photometric, planar = ((height, width), "minisblack",
+                                              None)
             tw.write(_row_blocks(planes, rows_per_strip),
-                     shape=(height, width, 3), dtype=np.uint16,
-                     photometric=PHOTOMETRIC_LINEAR_RAW, planarconfig="contig",
+                     shape=shape, dtype=np.uint16, photometric=photometric,
+                     planarconfig=planar,
                      compression=None, subfiletype=0,
                      rowsperstrip=rows_per_strip, extratags=raw_tags,
                      metadata=None, software=software,
                      resolution=profile.resolution,
                      resolutionunit=profile.resolution_unit)
+        if samples == 1:
+            _restate_as_linear_raw(path)
     except JoinError:
         raise
     except Exception as e:
         raise JoinError(f"failed to write {path}: {e}") from e
 
 
+def _restate_as_linear_raw(path: str) -> None:
+    """Rewrite the PhotometricInterpretation of `path`'s image SubIFD — written
+    as BlackIsZero, because tifffile will not write a one-sample LinearRaw page
+    — as LinearRaw, in place."""
+    with tifffile.TiffFile(os.path.normpath(path)) as tf:
+        page = tf.pages[0].pages[0]
+        page = page.aspage() if hasattr(page, "aspage") else page
+        tag = page.tags.get("PhotometricInterpretation")
+        if tag is None or tag.dtype != 3 or tag.count != 1:
+            raise JoinError(f"cannot find the image's photometric tag: {path}")
+        offset, byteorder = tag.valueoffset, tf.byteorder
+    with open(os.path.normpath(path), "r+b") as fh:
+        fh.seek(offset)
+        fh.write(struct.pack(byteorder + "H", PHOTOMETRIC_LINEAR_RAW))
+
+
 def verify_structure(path: str,
                      expect_shape: Optional[Tuple[int, int]] = None) -> None:
-    """Confirm `path` is a real, non-empty uint16 LinearRaw RGB DNG of the
-    expected (H, W). Raises JoinError on any mismatch.
+    """Confirm `path` is a real, non-empty uint16 LinearRaw DNG — colour or
+    monochrome — of the expected (H, W). Raises JoinError on any mismatch.
 
     The thumbnail in IFD0 is deliberately not what gets checked: a file whose
     preview survived but whose image did not must fail."""
@@ -457,7 +518,7 @@ def verify_structure(path: str,
         if page is None:
             raise JoinError(f"joined DNG has no LinearRaw image: {path}")
         shape, dtype = tuple(page.shape), np.dtype(page.dtype)
-    if (dtype != np.uint16 or len(shape) != 3 or shape[2] != 3
+    if (dtype != np.uint16 or tuple(shape[2:]) not in ((), (3,))
             or shape[0] <= 0 or shape[1] <= 0):
         raise JoinError(f"joined DNG failed verification "
                         f"(shape={shape}, dtype={dtype}): {path}")
@@ -491,7 +552,8 @@ def verify_pixels(path: str, sources: Sequence[str],
                     a = np.asarray(joined[offset + i:offset + i + n])
                     b = np.asarray(src[i:i + n])
                     if not np.array_equal(a, b):
-                        bad = int(np.argmax(np.any(a != b, axis=(1, 2))))
+                        bad = int(np.argmax(np.any(
+                            a != b, axis=tuple(range(1, a.ndim)))))
                         raise JoinError(
                             f"section {index} ({os.path.basename(source)}) does "
                             f"not match the joined file: first difference at "
@@ -505,8 +567,8 @@ def verify_pixels(path: str, sources: Sequence[str],
 
 
 def read_joined_dng(path: str) -> np.ndarray:
-    """The (H, W, 3) uint16 linear image out of a DNG this tool wrote — the
-    SubIFD, not the thumbnail. Reads it all into memory; mostly useful for
-    tests and for checking a small file."""
+    """The (H, W, 3) — or, monochrome, (H, W) — uint16 linear image out of a
+    DNG this tool wrote: the SubIFD, not the thumbnail. Reads it all into
+    memory; mostly useful for tests and for checking a small file."""
     with open_plane(path) as plane:
         return np.array(plane)

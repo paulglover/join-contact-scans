@@ -117,7 +117,7 @@ Colour is where they part company, and the next section says why.
 ## What the output file is
 
 A linear DNG: `PhotometricInterpretation = 34892` (LinearRaw), three 16-bit
-samples per pixel, uncompressed, with the full-resolution image in a SubIFD and
+samples per pixel — or one, for a monochrome scan — uncompressed, with the full-resolution image in a SubIFD and
 a small sRGB-encoded preview in IFD0 — the layout the DNG spec prescribes, and
 the one `trichrome` writes.
 
@@ -173,6 +173,17 @@ that tag skips it and renders as it always would.
 Only if a source states no colour matrix at all does the tool fall back to a
 fabricated one — sRGB primaries, `AsShotNeutral` at (1, 1, 1). That is a
 placeholder to grade from, not a measurement.
+
+### Monochrome scans
+
+VueScan writes a black-and-white scan as LinearRaw with one sample per pixel and
+no colour tags, which is what the DNG spec asks for when there is a single
+colour plane. The joined sheet is written the same way: one sample, a greyscale
+preview, `BlackLevel`/`WhiteLevel` stated once rather than per channel, and no
+fabricated colour spec, since a 3x3 matrix on a one-plane image would make the
+file malformed rather than merely uncalibrated. The tone curve and black-render
+declarations are added just as for colour. A sheet cannot mix colour and
+monochrome sections.
 
 ### Geometry tags
 
